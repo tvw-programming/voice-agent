@@ -1,0 +1,22 @@
+# Core
+openai>=1.40
+anthropic>=0.40
+httpx>=0.27
+python-dotenv>=1.0
+rapidfuzz>=3.0
+num2words>=0.5.13
+numpy>=1.26
+
+# Audio + speech
+sounddevice>=0.4.6
+soundfile>=0.12
+faster-whisper>=1.0
+silero-vad>=5.1
+torch>=2.2
+kokoro>=0.9.4
+
+# Mock API + tests
+fastapi>=0.110
+uvicorn>=0.29
+pytest>=8.0
+pytest-asyncio>=0.23

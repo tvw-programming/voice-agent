@@ -1,0 +1,156 @@
+{
+  "agent": {
+    "name": "Vani",
+    "greeting": "Namaste! I'm Vani. How can I help you today?",
+    "default_language": "en-IN",
+    "devanagari_language": "hi-IN",
+    "system_prompt_file": "prompts/system.md",
+    "max_history_messages": 24,
+    "max_tool_rounds": 4,
+    "exit_phrases": ["bye", "goodbye", "exit", "stop the call", "alvida"]
+  },
+
+  "audio": {
+    "input_sample_rate": 16000,
+    "block_size": 512,
+    "max_utterance_seconds": 20,
+    "vad": {
+      "provider": "silero",
+      "threshold": 0.5,
+      "min_silence_ms": 600,
+      "min_speech_ms": 250,
+      "pre_roll_ms": 300
+    },
+    "barge_in": {
+      "enabled": true,
+      "threshold": 0.8,
+      "min_speech_ms": 250
+    }
+  },
+
+  "stt": {
+    "strategy": "local_first",
+    "local": {
+      "provider": "faster-whisper",
+      "model": "large-v3-turbo",
+      "device": "auto",
+      "compute_type": "default",
+      "language": "en",
+      "initial_prompt": "Indian English conversation. Names like Aarav, Deshmukh, Kulkarni, Patil, Joshi, Priya, Sharma."
+    },
+    "cloud": {
+      "provider": "sarvam",
+      "model": "saaras:v3",
+      "mode": "transcribe",
+      "language_code": "unknown",
+      "api_key_env": "SARVAM_API_KEY"
+    },
+    "timeout_ms": 8000
+  },
+
+  "llm": {
+    "strategy": "local_first",
+    "local": {
+      "provider": "lmstudio",
+      "base_url": "http://localhost:1234/v1",
+      "model": "qwen3-8b",
+      "temperature": 0.4,
+      "max_tokens": 400,
+      "supports_tools": true,
+      "first_token_timeout_ms": 4000
+    },
+    "cloud": [
+      {
+        "provider": "anthropic",
+        "model": "claude-haiku-4-5-20251001",
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "temperature": 0.4,
+        "max_tokens": 400
+      },
+      {
+        "provider": "openai_compatible",
+        "name": "sarvam",
+        "base_url": "https://api.sarvam.ai/v1",
+        "model": "sarvam-m",
+        "api_key_env": "SARVAM_API_KEY",
+        "temperature": 0.4,
+        "max_tokens": 400,
+        "supports_tools": false
+      }
+    ],
+    "fallback": {
+      "health_check_on_start": true,
+      "first_token_timeout_ms": 2500,
+      "total_timeout_ms": 20000,
+      "circuit_breaker": { "failure_threshold": 3, "cooldown_seconds": 60 }
+    }
+  },
+
+  "tts": {
+    "preferred_gender": "female",
+    "voices": {
+      "local_indic_parler": {
+        "provider": "indic-parler-tts",
+        "model": "ai4bharat/indic-parler-tts",
+        "female": { "description": "A young Indian woman speaks clearly in a warm, friendly tone at a moderate pace, with very clear audio." },
+        "male":   { "description": "An Indian man speaks clearly in a calm, professional tone at a moderate pace, with very clear audio." }
+      },
+      "local_kokoro": {
+        "provider": "kokoro",
+        "lang_code": "h",
+        "female": { "voice_id": "hf_alpha", "alternate": "hf_beta" },
+        "male":   { "voice_id": "hm_omega", "alternate": "hm_psi" },
+        "speed": 1.0
+      },
+      "cloud_sarvam": {
+        "provider": "sarvam",
+        "model": "bulbul:v3",
+        "api_key_env": "SARVAM_API_KEY",
+        "female": { "voice_id": "ishita", "alternate": "priya" },
+        "male":   { "voice_id": "ratan",  "alternate": "shubh" },
+        "pace": 1.0,
+        "temperature": 0.6,
+        "sample_rate": 24000
+      }
+    },
+    "order": ["local_indic_parler", "local_kokoro", "cloud_sarvam"],
+    "timeout_ms": 15000
+  },
+
+  "tools": {
+    "student_lookup": {
+      "enabled": true,
+      "base_url_env": "STUDENT_API_BASE_URL",
+      "api_key_env": "STUDENT_API_KEY",
+      "endpoint": "/students/search",
+      "method": "GET",
+      "query_params": { "first_name": "{first_name}", "last_name": "{last_name}" },
+      "fallback_search_by_last_name": true,
+      "timeout_ms": 3000,
+      "retries": 2,
+      "cache_ttl_seconds": 300,
+      "fuzzy_match": { "enabled": true, "min_score": 0.85 },
+      "require_name_confirmation": true,
+      "max_matches_to_read": 3,
+      "field_map": {
+        "first_name": "first_name",
+        "last_name": "last_name",
+        "class": "class",
+        "division": "division",
+        "roll_number": "roll_number",
+        "attendance_percent": "attendance_percent",
+        "last_exam_result": "last_exam_result"
+      },
+      "speakable_fields": ["class", "division", "roll_number", "attendance_percent", "last_exam_result"],
+      "never_speak_fields": ["phone", "address", "aadhaar", "date_of_birth", "parent_contact", "email"],
+      "caller_auth_required": true,
+      "staff_pin_env": "STAFF_PIN",
+      "max_pin_attempts": 3
+    }
+  },
+
+  "logging": {
+    "level": "INFO",
+    "log_transcripts": false
+  }
+}
