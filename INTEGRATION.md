@@ -2,7 +2,33 @@
 
 How to connect Vani to your real student API and to the cloud fallback services, and how the pieces fit together.
 
-Prerequisite: the agent already runs against the mock API (see [INSTALLATION.md](INSTALLATION.md)).
+Prerequisite: the agent already runs against the student API in `student_api/` (see [INSTALLATION.md](INSTALLATION.md)).
+
+## 0. The student API (`student_api/`)
+
+A small Express server with 40 static dummy students (`students.js`). Its parameter names are the ones the agent's default config expects, so no mapping is needed.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /health` | No key needed. `{"status":"ok","students":40}` |
+| `GET /api/v1/students/search` | Search. Parameters below; at least one is required |
+| `GET /api/v1/students/:id` | One student: `{"data": {...}}` or 404 |
+
+Search parameters (all optional, all must match, names ignore case):
+
+| Parameter | Example | Notes |
+|---|---|---|
+| `first_name` | `Priya` | Exact match |
+| `last_name` | `Kulkarni` | Exact match; the agent handles misheard names by retrying same-sounding spellings |
+| `class` | `8`, `10`, `UKG` | The agent normalises "eighth" or "VIII" to `8` before calling |
+| `division` | `A` | |
+| `roll_number` | `12` | Digits only, otherwise 400 |
+
+Every `/api` request needs `Authorization: Bearer <key>`; the key is `STUDENT_API_KEY` when the server starts (default `dev-key`). Responses are `{"results": [...], "count": n}`, or `{"error": "..."}` with 400, 401 or 404.
+
+Each record has `id`, `first_name`, `last_name`, `class`, `division`, `roll_number`, `attendance_percent` and `last_exam_result`. It also has `phone`, `address`, `date_of_birth` and `parent_contact`, on purpose, so you can see that the agent never speaks them.
+
+To change the data, edit `student_api/students.js` and restart. To connect a different API later, follow section 2.
 
 ---
 
@@ -133,7 +159,12 @@ The tool returns a `status` that the LLM turns into speech:
 | `found` | One match | Reads the speakable fields |
 | `multiple_matches` | 2–3 matches | Asks which one, using class and division |
 | `too_many_matches` | More than `max_matches_to_read` | Asks for class and division first |
-| `not_found` | No match | Says so and offers to check the spelling |
+| `not_found` | No match | Says so and offers to take the surname letter by letter |
+| `confirm_match` | A close but different-sounding name (Patel for Patil) | Asks "Is that the student?" before sharing details |
+| `need_more_info` | e.g. class without division | Asks for what's missing |
+| `spelling_unclear` | Spelled letters couldn't be read | Asks the caller to spell again ("B for Bombay") |
+| `not_in_your_classes` | A teacher asked about a class that isn't theirs | Explains that teachers can look up only their own classes, without saying whether the student exists |
+| `limit_reached` | More than `max_lookups_per_call` lookups | Asks the caller to call again later |
 | `error` | API down, 4xx, not configured | Apologises; details go to the log |
 
 Results are cached per name for `cache_ttl_seconds` (default 5 minutes).
@@ -202,10 +233,12 @@ Keep tool results small and free of sensitive data. Everything a tool returns is
 
 ## 6. Production checklist
 
-- [ ] `STAFF_PIN` changed from any test value; shared only with staff
+- [ ] `STAFF_PIN_SECRET` set to a long random value; every staff member added with `staff_pins add`, and the shared `STAFF_PIN` removed from `.env`
+- [ ] Teachers have role `teacher` and the right classes (`staff_pins list`)
+- [ ] `audit.retention_days` agreed with the school (default 7) and `audit_log verify` reports the chain intact
 - [ ] `never_speak_fields` includes your API's own names for phone, address, Aadhaar, DOB and parent contact
 - [ ] `logging.log_transcripts` is `false`
 - [ ] `.env` is not in version control (add it to `.gitignore`)
 - [ ] Student API key is read-only and scoped to search
-- [ ] Decide whether student data may go to cloud LLMs. If not, remove the `anthropic` and `sarvam` entries from `llm.cloud` so lookups only ever run on the local model
+- [ ] Decide whether student data may go to cloud LLMs (currently allowed: the data is dummy). To keep it local, remove the `anthropic` and `sarvam` entries from `llm.cloud`. The audit log's `llm_provider` column shows which model handled each lookup
 - [ ] `pytest` passes and `check_setup.py` is all `[OK]`

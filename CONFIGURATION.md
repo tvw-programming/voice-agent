@@ -13,7 +13,8 @@ Vani is configured in two places:
 
 | Variable | Required? | Used for |
 |---|---|---|
-| `STAFF_PIN` | Yes, for student lookups | PIN the caller must say before any lookup. Digits only, e.g. `4321` |
+| `STAFF_PIN_SECRET` | Yes, for per-staff PINs | Random secret used to hash staff PINs. Generate with `python -c "import secrets; print(secrets.token_hex(32))"`. Changing it invalidates every PIN |
+| `STAFF_PIN` | Only until staff are enrolled | Legacy shared PIN. Ignored once `data/staff.json` has an active staff member |
 | `STUDENT_API_BASE_URL` | Yes, for student lookups | Base URL of the student API, e.g. `https://school.example.in/api` |
 | `STUDENT_API_KEY` | If your API needs auth | Sent as `Authorization: Bearer <key>` |
 | `ANTHROPIC_API_KEY` | Optional | First cloud LLM fallback (Claude Haiku 4.5) |
@@ -169,12 +170,48 @@ Covered in detail in [INTEGRATION.md](INTEGRATION.md). Summary:
 | `caller_auth_required`, `staff_pin_env`, `max_pin_attempts` | PIN gate |
 | `timeout_ms`, `retries`, `cache_ttl_seconds` | Network behaviour |
 
+### Lookup feature settings
+
+**`tools.student_lookup` additions**
+
+| Key | Default | Meaning |
+|---|---|---|
+| `max_lookups_per_call` | `20` | Stops one call from walking through a whole class by roll number |
+| `suggest_spelling` | `true` | After `not_found`, the agent offers to take the surname letter by letter |
+| `class_search.mode` | `"api"` | `api`: class, division and roll are sent to the API and also filtered locally. `client_filter`: only local filtering; roll-number-only search is disabled |
+| `class_search.query_params` | class/division/roll_number | Your API's parameter names, e.g. `{"std": "{class}", "div": "{division}", "roll": "{roll_number}"}` |
+| `class_search.word_divisions` | `[]` | Named divisions such as `["Rose", "Lotus"]` |
+| `phonetic.min_score` / `min_surname_score` | `0.85` | How close a name must sound. Lower accepts more STT errors |
+| `phonetic.search_variants`, `max_variants` | `true`, `6` | If nothing is found, retry the API with same-sounding surname spellings |
+| `phonetic.confirm_close_matches` | `true` | Close-but-different names (Patel vs Patil) need the caller's confirmation first |
+
+**`filler`**: `enabled`, `delay_ms` (default 350), `tools` (default `get_student_details`), and `phrases` per language (`en`, `hinglish`, `hi`, `mr`) and gender.
+
+**`spelling`**: `min_silence_ms` (1500) and `max_utterance_seconds` (30) apply for the one turn after the agent asks the caller to spell.
+
+**`staff`**: `file` (`data/staff.json`), `secret_env`, `pin_length` (6; custom PINs must be exactly this long), `intercept_pin` (check the PIN in code before the LLM), and the global lockout: `global_max_failures` (10) within `global_window_seconds` (600) locks lookups for `global_lock_seconds` (900).
+
+**`audit`**: `file` (`data/audit.db`), `fail_closed` (refuse a lookup if it can't be logged), `retention_days` (**7**; older rows are purged on the first write after startup and then hourly).
+
+**`access`** (who may hear about which students):
+
+```json
+"access": {
+  "enabled": true,
+  "roles": { "admin": "all", "principal": "all", "clerk": "all", "teacher": "own_classes" },
+  "unknown_role": "own_classes"
+}
+```
+
+`all` = any student; `own_classes` = only the classes stored for that staff member (`--classes 8-A,8-B` when adding them, or `staff_pins set-classes`). A class without a division, such as `10`, covers every division. Add your own roles here, for example `"librarian": "all"`. The legacy shared PIN always has full access.
+
 ### `logging`
 
 | Key | Default | Meaning |
 |---|---|---|
 | `level` | `"INFO"` | `DEBUG` for troubleshooting |
-| `log_transcripts` | `false` | Logs what callers and the agent say. Keep off in production, as it may include student data |
+| `log_transcripts` | `false` | Logs what callers and the agent say. Keep off in production, as it may include student data. Speech before PIN verification is never logged |
+| `turn_metrics` | `true` | One log line per voice turn: `turn stt_ms=410 first_audio_ms=1180 tool_ms=640 tools=get_student_details filler=yes llm=lmstudio`. `first_audio_ms` counts from when the caller stopped speaking |
 
 ---
 

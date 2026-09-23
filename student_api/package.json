@@ -1,0 +1,17 @@
+{
+  "name": "vani-student-api",
+  "version": "1.0.0",
+  "description": "Simple Express student API with static sample data for the Vani voice agent",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

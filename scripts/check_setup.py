@@ -42,11 +42,30 @@ print("\nCloud fallback keys (.env)")
 for key in ["ANTHROPIC_API_KEY", "SARVAM_API_KEY"]:
     report(key, bool(os.environ.get(key)))
 
+print("\nStudent API server (student_api/)")
+import shutil  # noqa: E402
+report("(optional) node", shutil.which("node") is not None, "-> https://nodejs.org or: brew install node")
+report("(optional) student_api/node_modules",
+       (Path(__file__).resolve().parents[1] / "student_api" / "node_modules" / "express").exists(),
+       "-> cd student_api && npm install")
+
 print("\nStudent API")
 s = cfg["tools"]["student_lookup"]
 base = os.environ.get(s["base_url_env"])
 report(s["base_url_env"], bool(base), base or "")
-report(s["staff_pin_env"], bool(os.environ.get(s["staff_pin_env"])))
+staff_cfg = cfg.get("staff", {})
+secret = os.environ.get(staff_cfg.get("secret_env", "STAFF_PIN_SECRET"))
+report(staff_cfg.get("secret_env", "STAFF_PIN_SECRET"), bool(secret))
+staff_file = Path(__file__).resolve().parents[1] / staff_cfg.get("file", "data/staff.json")
+active = []
+if staff_file.exists():
+    import json as _json
+    active = [x for x in _json.loads(staff_file.read_text(encoding="utf-8")).get("staff", []) if x.get("active", True)]
+if active:
+    report("staff enrolled", True, f"({len(active)} active)")
+else:
+    report(s["staff_pin_env"] + " (legacy shared PIN, no staff enrolled yet)", bool(os.environ.get(s["staff_pin_env"])),
+           "-> add staff: python -m voice_agent.features.staff_pins add --name \"Full Name\"")
 if base:
     try:
         httpx.get(base.rstrip("/") + s["endpoint"], params={"first_name": "test", "last_name": "test"},

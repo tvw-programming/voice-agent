@@ -18,6 +18,33 @@ Mic → Silero VAD → faster-whisper (→ Sarvam Saaras) → LLM router → too
 - [CONFIGURATION.md](CONFIGURATION.md): every `.env` variable and `config.json` setting
 - [INTEGRATION.md](INTEGRATION.md): connecting your real student API and cloud services, adding tools
 
+## Lookup features
+
+Each feature is one file in `src/voice_agent/features/`, with a matching test file in `tests/`:
+
+| Feature | File | What it does |
+|---|---|---|
+| Filler line | `filler.py` | Says "Ek second, check kar rahi hoon." if a lookup takes over 350 ms |
+| Class / division / roll search | `class_search.py` | "Aarav in 8-A" or "roll 12 of 8-A" |
+| Spelling mode | `spelling.py` | "K U L K A R N I", "B for Bombay"; longer pauses allowed while spelling |
+| Sound-based matching | `phonetic.py` | Desmukh finds Deshmukh; Patel vs Patil must be confirmed |
+| Audit log | `audit_log.py` | Tamper-evident `data/audit.db`, kept 7 days; `export`, `verify`, `purge`, `tail` commands |
+| Per-staff PINs | `staff_pins.py` | 6-digit hashed PINs in `data/staff.json`; PIN checked before the LLM sees it |
+| Role-based access | `access_roles.py` | Office staff see every student; teachers only their own classes |
+
+The student API is a small Express server in `student_api/` with 40 dummy students (`npm install && npm start`).
+
+First-time staff setup:
+
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"      # put in .env as STAFF_PIN_SECRET
+python -m voice_agent.features.staff_pins add --name "Sunita Patil" --role clerk   # prints the PIN once
+python -m voice_agent.features.staff_pins add --name "Meena Kale" --role teacher --classes 8-A,8-B
+python -m voice_agent.features.audit_log tail                  # see recent PIN attempts and lookups
+```
+
+Until at least one staff member is added, the old shared `STAFF_PIN` keeps working.
+
 ## Quick start (Windows)
 
 ```powershell
@@ -26,10 +53,11 @@ powershell -ExecutionPolicy Bypass -File scripts\setup_lmstudio.ps1
 
 # 2. Python environment (Python 3.10–3.12)
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
-#    then edit .env with your keys
+#    then edit .env (STAFF_PIN_SECRET, student API URL) and add yourself:
+python -m voice_agent.features.staff_pins add --name "Your Name" --role admin
 
-# 3. Test without real data: start the mock student API in a second terminal
-python mock_api\server.py
+# 3. Start the student API (Node.js 18+) in a second terminal
+cd student_api; npm install; npm start
 
 # 4. Check everything
 python scripts\check_setup.py
@@ -59,9 +87,9 @@ Set `tts.preferred_gender` to `"female"` or `"male"`, or use `--gender` or the `
 
 The agent enforces these steps **in code**, not only in the prompt:
 
-1. **Caller PIN**: `verify_caller` must succeed first (the PIN is set in `STAFF_PIN`; three wrong attempts lock lookups for the call). Spoken digits such as "four three two one" or "char teen do ek" both work.
-2. **Name confirmation**: the lookup is refused unless `name_confirmed_by_user` is true.
-3. **Fuzzy matching**: if the exact search fails, it searches by surname and fuzzy-matches the first name, which handles speech-to-text errors like "Pria" for Priya.
+1. **Caller PIN**: each staff member has their own 6-digit PIN (`staff_pins.py`). It is checked in code before the LLM sees it; three wrong attempts lock the call, and 10 failures in 10 minutes pause lookups for everyone. Spoken digits such as "four eight two nine one three" or "char aath do..." both work.
+2. **Confirmation**: the lookup is refused unless `confirmed_by_user` is true, and close-but-different names (Patel for Patil) need a second confirmation.
+3. **Matching**: exact search, then surname-only, then same-sounding surname spellings (Desmukh → Deshmukh), ranked by sound as well as spelling. Callers can also spell the name, or give class, division and roll number.
 4. **Field whitelist**: only `speakable_fields` ever reach the LLM; `never_speak_fields` are removed even if whitelisted by mistake.
 
 To connect your real API, set `STUDENT_API_BASE_URL` and `STUDENT_API_KEY` in `.env`, then in `config.json` adjust `endpoint`, `query_params` and `field_map` so they map to your API's actual field names. The response can be a list or an object with `results`, `data`, `students`, `items` or `records`.
@@ -73,5 +101,6 @@ Each stage (STT, LLM, TTS) tries providers in order. A provider is skipped for 6
 ## Tests
 
 ```
-pytest            # 22 tests: text normalisation, breaker, student tool, LLM router, agent loop
+pytest            # 104 tests: core (22), one file per feature, and the agent against the Express API
+cd student_api && npm test   # 9 API tests
 ```
