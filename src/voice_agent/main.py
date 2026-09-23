@@ -7,10 +7,16 @@
 import argparse
 import asyncio
 import logging
+import sys
 import threading
+import time
 
 from .agent import Agent
 from .config import load_config, read_prompt
+from .features import spelling
+from .features.audit_log import CallAudit, build_audit
+from .features.filler import CachingTTS, FillerPicker, FillerText, TurnMetrics
+from .features.staff_pins import PinInterceptor
 from .llm import build_llm_router
 from .text import normalize_for_speech
 from .tools import ToolRegistry
@@ -24,32 +30,56 @@ def _is_exit(text: str, cfg: dict) -> bool:
     return any(t == p or t.endswith(" " + p) for p in cfg["agent"].get("exit_phrases", []))
 
 
-async def _build(cfg):
+def _gender(cfg, override=None):
+    import os
+    g = (override or os.environ.get("VOICE_GENDER") or cfg["tts"].get("preferred_gender", "female")).lower()
+    return g if g in ("male", "female") else "female"
+
+
+async def _build(cfg, gender):
     router = build_llm_router(cfg)
     if cfg["llm"]["fallback"].get("health_check_on_start", True):
         await router.health_check()
-    session = build_session(cfg)
-    agent = Agent(cfg, router, ToolRegistry(cfg, session), read_prompt(cfg))
+    session = build_session(cfg)                                    # Feature 6
+    audit_log = build_audit(cfg)                                    # Feature 5
+    audit = CallAudit(audit_log, session) if audit_log else None
+    filler = FillerPicker(cfg.get("filler"), gender)                # Feature 1
+    interceptor = PinInterceptor(session) if cfg.get("staff", {}).get("intercept_pin", True) else None
+    agent = Agent(cfg, router, ToolRegistry(cfg, session, audit=audit), read_prompt(cfg),
+                  filler=filler, interceptor=interceptor)
+    if session.uses_staff_file:
+        log.info("Staff PINs: %d active staff", len(session.store.active()))
+    elif getattr(session, "_legacy_pin", None):
+        log.warning("No staff enrolled; using the shared STAFF_PIN (legacy mode)")
     return agent, router
 
 
-async def run_text(cfg):
-    agent, router = await _build(cfg)
+async def run_text(cfg, gender=None):
+    agent, router = await _build(cfg, _gender(cfg, gender))
     print(f"\n{cfg['agent']['name']}: {cfg['agent']['greeting']}   (type 'bye' to quit)\n")
     while True:
         user = (await asyncio.to_thread(input, "You: ")).strip()
         if not user:
             continue
         print(f"{cfg['agent']['name']}: ", end="", flush=True)
+        dim = sys.stdout.isatty()
         async for sentence in agent.respond(user):
+            if isinstance(sentence, FillerText):
+                sentence = f"\033[2m({sentence})\033[0m" if dim else f"({sentence})"
             print(sentence, end=" ", flush=True)
-        print(f"   [{router.last_provider}]")
+        m = agent.metrics
+        extra = f", lookup {m.tool_ms} ms" if m.tools else ""
+        print(f"   [{router.last_provider}{extra}]")
+        if cfg["logging"].get("turn_metrics", True):
+            log.debug(m.line())
         if _is_exit(user, cfg):
             break
 
 
-async def speak(agent_stream, tts, speaker, mic, vad, cfg) -> bool:
-    """Synthesise sentences while playing earlier ones. Returns True if interrupted."""
+async def speak(agent_stream, tts, speaker, mic, vad, cfg, on_first_audio=None) -> bool:
+    """Synthesise sentences while playing earlier ones. Returns True if interrupted.
+
+    `on_first_audio()` is called once, just before the first audio starts playing (turn metrics)."""
     from .audio_io import barge_in_monitor
     interrupt, done = threading.Event(), threading.Event()
     audio_q: asyncio.Queue = asyncio.Queue(maxsize=3)
@@ -72,8 +102,12 @@ async def speak(agent_stream, tts, speaker, mic, vad, cfg) -> bool:
             await audio_q.put(None)
 
     async def consumer():
+        first = True
         while (item := await audio_q.get()) is not None:
             if not interrupt.is_set():
+                if first and on_first_audio is not None:
+                    on_first_audio()
+                first = False
                 await asyncio.to_thread(speaker.play, item[0], item[1], interrupt)
 
     monitor = None
@@ -93,11 +127,16 @@ async def run_voice(cfg, gender):
 
     acfg = cfg["audio"]
     stt = STTRouter(cfg["stt"])
-    tts = TTSRouter(cfg["tts"], cfg["agent"], gender)
+    tts = CachingTTS(TTSRouter(cfg["tts"], cfg["agent"], gender))
     log.info("Loading speech models (first run downloads them) ...")
     await asyncio.to_thread(stt.preload)
     await asyncio.to_thread(tts.preload)
-    agent, router = await _build(cfg)
+    agent, router = await _build(cfg, tts.gender)
+    if agent.filler is not None and agent.filler.enabled:
+        await tts.warm([normalize_for_speech(p) for p in agent.filler.all_phrases()])   # Feature 1
+    spell_cfg = cfg.get("spelling", {})
+    whisper_cfg = stt.providers[0].cfg
+    normal_prompt = whisper_cfg.get("initial_prompt")
     vad, speaker = VAD(acfg["input_sample_rate"]), Speaker()
     mic = Microphone(acfg["input_sample_rate"], acfg["block_size"])
     mic.start()
@@ -112,15 +151,25 @@ async def run_voice(cfg, gender):
         await say(cfg["agent"]["greeting"])
         log.info("Listening ... (Ctrl+C to quit)")
         while True:
-            audio = await asyncio.to_thread(listen_for_utterance, mic, vad, acfg, stop)
+            # Feature 3: after the agent asks the caller to spell, allow longer pauses between letters.
+            spelling_turn = spell_cfg.get("enabled", True) and spelling.asks_to_spell(agent.last_reply)
+            listen_cfg = spelling.spelling_audio_config(acfg, spell_cfg) if spelling_turn else acfg
+            whisper_cfg["initial_prompt"] = spelling.SPELLING_STT_PROMPT if spelling_turn else normal_prompt
+            audio = await asyncio.to_thread(listen_for_utterance, mic, vad, listen_cfg, stop)
             if audio is None:
                 break
+            metrics = TurnMetrics()                         # clock starts when the caller stops speaking
             text = await stt.transcribe(audio, acfg["input_sample_rate"])
+            metrics.stt_ms = int((time.monotonic() - metrics.started) * 1000)
             if not text:
                 continue
             if cfg["logging"].get("log_transcripts"):
-                log.info("User: %s", text)
-            interrupted = await speak(agent.respond(text), tts, speaker, mic, vad, cfg)
+                # Never log what an unverified caller says: it may be their PIN.
+                log.info("User: %s", text if agent.tools.session.authenticated else "[hidden until verified]")
+            interrupted = await speak(agent.respond(text, metrics), tts, speaker, mic, vad, cfg,
+                                      on_first_audio=metrics.first_audio)
+            if cfg["logging"].get("turn_metrics", True):
+                log.info(metrics.line())
             if not interrupted:
                 mic.flush()
             if _is_exit(text, cfg):
@@ -142,7 +191,7 @@ def main():
     for noisy in ("httpx", "openai", "anthropic"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     try:
-        asyncio.run(run_text(cfg) if args.text else run_voice(cfg, args.gender))
+        asyncio.run(run_text(cfg, args.gender) if args.text else run_voice(cfg, args.gender))
     except KeyboardInterrupt:
         print("\nBye!")
 

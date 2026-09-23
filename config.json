@@ -145,12 +145,72 @@
       "never_speak_fields": ["phone", "address", "aadhaar", "date_of_birth", "parent_contact", "email"],
       "caller_auth_required": true,
       "staff_pin_env": "STAFF_PIN",
-      "max_pin_attempts": 3
+      "max_pin_attempts": 3,
+      "max_lookups_per_call": 20,
+      "suggest_spelling": true,
+      "class_search": {
+        "mode": "api",
+        "query_params": { "class": "{class}", "division": "{division}", "roll_number": "{roll_number}" },
+        "word_divisions": []
+      },
+      "phonetic": {
+        "min_score": 0.85,
+        "min_surname_score": 0.85,
+        "first_name_weight": 0.4,
+        "search_variants": true,
+        "max_variants": 6,
+        "confirm_close_matches": true
+      }
     }
+  },
+
+  "filler": {
+    "enabled": true,
+    "delay_ms": 350,
+    "tools": ["get_student_details"],
+    "phrases": {
+      "en":       { "female": ["One moment, let me check.", "Just a second, checking the records."],
+                    "male":   ["One moment, let me check.", "Just a second, checking the records."] },
+      "hinglish": { "female": ["Ek second, check kar rahi hoon.", "Bas ek minute, dekh rahi hoon."],
+                    "male":   ["Ek second, check kar raha hoon.", "Bas ek minute, dekh raha hoon."] },
+      "hi":       { "female": ["एक सेकंड, देख रही हूँ।"], "male": ["एक सेकंड, देख रहा हूँ।"] },
+      "mr":       { "female": ["एक मिनिट, बघते."], "male": ["एक मिनिट, बघतो."] }
+    }
+  },
+
+  "spelling": {
+    "enabled": true,
+    "min_silence_ms": 1500,
+    "max_utterance_seconds": 30
+  },
+
+  "staff": {
+    "enabled": true,
+    "file": "data/staff.json",
+    "secret_env": "STAFF_PIN_SECRET",
+    "pin_length": 6,
+    "intercept_pin": true,
+    "global_max_failures": 10,
+    "global_window_seconds": 600,
+    "global_lock_seconds": 900
+  },
+
+  "audit": {
+    "enabled": true,
+    "file": "data/audit.db",
+    "fail_closed": true,
+    "retention_days": 7
+  },
+
+  "access": {
+    "enabled": true,
+    "roles": { "admin": "all", "principal": "all", "clerk": "all", "teacher": "own_classes" },
+    "unknown_role": "own_classes"
   },
 
   "logging": {
     "level": "INFO",
-    "log_transcripts": false
+    "log_transcripts": false,
+    "turn_metrics": true
   }
 }
